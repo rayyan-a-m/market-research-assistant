@@ -331,8 +331,9 @@ waved through as "unresolvable."
 | Auth bypass | Clerk session JWT verified against Clerk's JWKS on every protected route; the dev bypass is hard-disabled when `ENV=production` |
 | Container compromise | The image runs as an unprivileged user — the process rendering attacker-controlled pages is the last one that should own the container |
 
-Each of these is unit-tested apart from the last two, which are deployment
-properties.
+Each row above is covered by tests except the last, which is a property of the
+image: verified by building it and confirming the process runs as `appuser`
+and can still drive headless Chromium.
 
 > The PDF path is worth one note of precision: `POST /sources/upload` is
 > implemented, authenticated and bounded, but the recovery UI deliberately
