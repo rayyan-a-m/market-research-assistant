@@ -202,10 +202,13 @@ each other's URL).
 
 ---
 
-## 4. Deploy a hello-world first (do this on day one)
+## 4. Deploy a hello-world first
 
-Before wiring real keys, prove the pipe works end to end. This catches
-Azure quota/provisioning problems early instead of on submission night.
+Do this before wiring real keys. Azure subscription quotas, provider
+registration and region capacity all fail at *provisioning* time, and they
+fail slowly. Proving the pipe end to end with a trivial image separates "my
+config is wrong" from "my cloud account isn't ready", which are otherwise
+indistinguishable from a stack trace.
 
 ```bash
 az login
@@ -398,27 +401,30 @@ it, set `SUMMARIZER_MODEL=gemini-2.5-flash` (a quota trade, not a code change).
 
 ---
 
-## 9. Push to GitHub
+## 9. Secrets hygiene before you push
 
-From the repo root (`progressAssesment/` locally — rename as you like):
+Every credential in this guide is a placeholder, and `.gitignore` excludes
+`.env*` (with an explicit exception for the `.example` templates, which a
+fresh clone needs), `node_modules/`, `.venv/`, and `.next/`.
 
-```bash
-git init
-git add .
-git commit -m "Market Research Intelligence Assistant"
-git branch -M main
-git remote add origin https://github.com/<you>/market-research-assistant.git
-git push -u origin main
-```
-
-`.gitignore` already excludes `.env*`, `node_modules/`, `.venv/`,
-`.next/`, `.claude/`, and the local `_reference/` folder. **Before pushing,
-confirm no secrets are staged** (this greps the working tree for key-shaped
-strings):
+Ignore rules are necessary but not sufficient — they only help for paths
+someone thought of in advance. This greps the working tree for key-shaped
+strings regardless of which file they landed in:
 
 ```bash
-git grep -nE 'AIza[A-Za-z0-9_-]{20,}|github_pat_[A-Za-z0-9_]{20,}|BSA[A-Za-z0-9]|service_role|postgresql://' -- ':!*.example' ':!deployment.md' || echo "clean"
+git grep -nE 'AIza[A-Za-z0-9_-]{20,}|sk_(test|live)_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|postgresql://[^[:space:]]+@[a-z0-9.-]+\.(supabase|pooler|amazonaws|azure)' \
+  -- ':!*.example' ':!deployment.md' || echo "clean"
 ```
+
+The patterns match credential *shapes* — a Google key prefix, a Clerk secret
+key, a two-segment JWT, a Postgres URI pointing at a managed host — rather
+than variable names like `service_role_key` or a localhost URI in a fixture.
+A scanner that fires on every false positive is one people learn to ignore,
+which is worse than not having it.
+
+Worth running as a pre-push hook rather than from memory. A leaked key is one
+of the few mistakes in this project that can't be fixed by a follow-up commit
+— once it's in the history it has to be rotated, not deleted.
 
 ---
 
