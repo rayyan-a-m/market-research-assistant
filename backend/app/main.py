@@ -29,6 +29,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     if settings.database_url:
         await init_pool(settings.database_url)
+    # Log the effective non-secret config once at boot. This is the line that
+    # turns a "Failed to fetch" CORS mystery into an obvious FRONTEND_ORIGIN
+    # mismatch — the value the browser must match is right here in the logs.
+    logger.info(
+        "startup_config",
+        extra={
+            "env": settings.env,
+            "frontend_origin": settings.frontend_origin,
+            "summarizer_model": settings.summarizer_model,
+            "judge_model": settings.judge_model,
+            "embedding_model": settings.embedding_model,
+            "search_provider": "serper" if settings.serper_api_key else "none",
+            "cross_family_judge": bool(settings.openai_api_key),
+            "auth": "disabled"
+            if (settings.auth_disabled and settings.env != "production")
+            else "clerk",
+            "db_configured": bool(settings.database_url),
+        },
+    )
     # Preflight: validate configured models against the live API and log any
     # problem clearly at boot (never fatal). This is the antidote to a model
     # being valid in config but retired on the provider's side.

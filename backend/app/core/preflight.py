@@ -67,9 +67,48 @@ async def run_preflight(settings: Settings) -> list[str]:
     """Validate the configured Gemini models against the live API. Returns a
     list of problems (empty = all good). Never raises."""
     if not settings.gemini_api_key:
-        return []
+        return ["GEMINI_API_KEY not set"]
     try:
         available = await _list_gemini_models(settings.gemini_api_key)
     except Exception as exc:  # noqa: BLE001 — advisory only, must not block startup
         return [f"could not verify Gemini models (ListModels failed: {exc})"]
     return evaluate_gemini_models(available, settings)
+
+
+_SERPER_URL = "https://google.serper.dev/search"
+
+
+async def check_serper(api_key: str, *, timeout: float = 15.0) -> str | None:
+    """Validate the Serper key with a minimal search. `None` = ok, else a
+    human-readable reason. Note: consumes one query from the Serper quota."""
+    if not api_key:
+        return "SERPER_API_KEY not set"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                _SERPER_URL,
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                json={"q": "healthcheck", "num": 1},
+            )
+    except Exception as exc:  # noqa: BLE001
+        return f"request failed: {exc}"
+    if resp.status_code == 200:
+        return None
+    if resp.status_code in (401, 403):
+        return f"auth failed (HTTP {resp.status_code}) — check SERPER_API_KEY"
+    return f"unexpected HTTP {resp.status_code}"
+
+
+async def check_database() -> str | None:
+    """Verify the DB pool is up and answering. `None` = ok, else a reason."""
+    from app.db.pool import get_pool
+
+    try:
+        pool = get_pool()
+    except Exception as exc:  # noqa: BLE001 — pool not initialized
+        return f"pool not initialized: {exc}"
+    try:
+        value = await pool.fetchval("SELECT 1")
+    except Exception as exc:  # noqa: BLE001
+        return f"query failed: {exc}"
+    return None if value == 1 else f"unexpected response: {value!r}"

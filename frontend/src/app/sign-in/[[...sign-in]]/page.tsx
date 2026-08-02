@@ -1,8 +1,8 @@
 import { SignIn } from "@clerk/nextjs";
 
-// Google-only is configured in the Clerk dashboard (Social connections →
-// Google, everything else disabled), so <SignIn/> renders a single
-// "Continue with Google" button — no form, no password.
+// The sign-in methods are configured in the Clerk dashboard — <SignIn/>
+// renders whatever is enabled (Google, and/or email + password), so adding a
+// method is a dashboard toggle, not a code change here.
 export default function SignInPage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-8 px-6 py-16">
