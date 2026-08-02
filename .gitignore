@@ -1,0 +1,48 @@
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.local.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local reference materials (not part of the submission)
+_reference/
+/docs/
+/enhancements.txt
+/Software Engineer - AI- Task (1).docx
+/deployment.md
+
+# Claude Code project-local settings
+.claude/
+
+# Misc
+*.log
+.cache/

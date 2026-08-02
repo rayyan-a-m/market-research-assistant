@@ -1,0 +1,41 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# E501: line length is handled by formatting, not worth failing CI over.
+# UP046: PEP 695 `class Foo[T]` generic syntax has weaker support in some
+# tooling (pydantic dataclass interplay) than `Generic[T]` as of this
+# writing; not worth the churn for a take-home.
+ignore = ["E501", "UP046"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection markers are called in argument defaults by
+# design — that's the framework's contract, not the B008 mutable-default bug.
+extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.File", "fastapi.Form",
+    "fastapi.Query", "fastapi.Header", "fastapi.Body",
+]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Integration tests make real API calls (need keys) and the model tier of the
+# eval harness scores a live model — both cost money and are non-deterministic,
+# so neither runs by default. Run them explicitly:
+#   pytest -m integration     # adapters against live APIs
+#   pytest -m eval            # judge quality against the labelled dataset
+addopts = "-m 'not integration and not eval'"
+markers = [
+    "integration: makes real calls to live provider APIs; requires keys; skipped by default",
+    "eval: scores the live judge model against evals/dataset.py; requires keys; skipped by default",
+]

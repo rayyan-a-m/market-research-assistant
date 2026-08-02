@@ -1,0 +1,30 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.7.0
+python-multipart==0.0.20
+
+# LLM orchestration (versions resolved together on the langchain 0.3.x line)
+langchain==0.3.30
+langchain-core==0.3.86
+langchain-google-genai==2.0.11   # Gemini: summarizer, discovery, embeddings
+langchain-openai==0.3.35         # judge via GitHub Models (OpenAI-compatible endpoint)
+openai==1.109.1
+
+# Fetching / extraction (Stage 1 — wired up in the pipeline build step)
+crawl4ai==0.4.247
+pdfplumber==0.11.4
+tldextract==5.1.3
+jellyfish==1.1.0
+
+# Retrieval (in-memory cosine — see ARCHITECTURE.md)
+numpy==2.2.1
+
+# HTTP client (search providers + Clerk JWKS)
+httpx==0.28.1
+
+# Persistence (direct Postgres over the Supabase DATABASE_URL)
+asyncpg==0.30.0
+
+# Auth: verify Clerk session JWTs against Clerk's JWKS
+pyjwt[crypto]==2.10.1

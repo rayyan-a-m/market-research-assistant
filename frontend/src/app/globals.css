@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/*
+ * Apple.com design language.
+ * Fonts: the SF system stack — `-apple-system`/`BlinkMacSystemFont` render
+ * as San Francisco on Apple devices (SF Pro isn't a redistributable webfont),
+ * with Helvetica Neue / Arial as graceful fallbacks elsewhere. This is the
+ * same stack apple.com ships.
+ * Colors: Apple's actual tokens — #1d1d1f primary text (not pure black),
+ * #f5f5f7 signature light gray surfaces, #86868b muted gray, #0071e3 CTA
+ * blue (#2997ff on dark), #d2d2d7 hairline borders.
+ */
+
+:root {
+  --background: #ffffff;
+  --surface: #f5f5f7;
+  --foreground: #1d1d1f;
+  --muted: #86868b;
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --border: #d2d2d7;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-border: var(--border);
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono:
+    "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #000000;
+    --surface: #1d1d1f;
+    --foreground: #f5f5f7;
+    --muted: #86868b;
+    --accent: #2997ff;
+    --accent-hover: #47a3ff;
+    --border: #424245;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
+}
+
+/* Shared text-input styling (used across the research form and fallbacks). */
+.input {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+.input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
