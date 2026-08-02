@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...but the template has to be committed, or a fresh clone has no idea which
+# vars this app needs. It holds placeholders only.
+!.env.local.example
 
 # vercel
 .vercel
