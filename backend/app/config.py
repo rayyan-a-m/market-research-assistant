@@ -1,11 +1,11 @@
 """Application configuration, loaded once from the environment.
 
-Every provider/adapter takes its config through this Settings object via
-FastAPI dependency injection (see app/dependencies.py) rather than
-reading os.environ directly — that's what lets tests substitute fake
-settings without monkeypatching the environment, and it's the same
-reason the provider factory takes a model *name* per role instead of
-each adapter hardcoding one.
+Every provider/adapter takes its config through this Settings object, injected
+by FastAPI via `Depends(get_settings)`, rather than reading os.environ
+directly. That's what lets tests substitute fake settings without
+monkeypatching the environment, and it's the same reason the provider factory
+takes a model *name* per role instead of each adapter hardcoding one:
+depend on configuration passed in, not on a global read from underneath you.
 """
 
 from __future__ import annotations
@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     env: str = Field(default="development", alias="ENV")
 
     # --- Provider credentials ---
-    # Gemini (Google AI Studio key) powers the summarizer, discovery ranking,
-    # and embeddings. The judge runs on GitHub Models' free tier via its
-    # OpenAI-compatible endpoint, authenticated with a GitHub token — a
-    # deliberately different model family from the summarizer.
+    # One Gemini (Google AI Studio) key powers the whole pipeline: summarizer,
+    # judge, discovery ranking, and embeddings. The judge runs on a second
+    # Gemini model (see judge_model) — a cheaper cross-model check within the
+    # same family, using this same key.
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     # Optional cross-family judge: set these to route the hallucination judge
     # through any OpenAI-compatible provider (Groq, OpenRouter, OpenAI, ...).

@@ -7,15 +7,18 @@ python-multipart==0.0.20
 # LLM orchestration (versions resolved together on the langchain 0.3.x line)
 langchain==0.3.30
 langchain-core==0.3.86
-langchain-google-genai==2.0.11   # Gemini: summarizer, discovery, embeddings
-langchain-openai==0.3.35         # judge via GitHub Models (OpenAI-compatible endpoint)
+langchain-google-genai==2.0.11   # Gemini: summarizer, judge, discovery, embeddings
+# Second ChatProvider adapter, targeting any OpenAI-compatible endpoint. Not on
+# the default path (the judge runs on Gemini); it exists so the provider seam is
+# demonstrably real and so the judge can be pointed at another model family by
+# config. See ProviderFactory.judge and DESIGN_DECISIONS.md #10.
+langchain-openai==0.3.35
 openai==1.109.1
 
-# Fetching / extraction (Stage 1 — wired up in the pipeline build step)
+# Fetching / extraction (Stage 1)
 crawl4ai==0.4.247
-pdfplumber==0.11.4
-tldextract==5.1.3
-jellyfish==1.1.0
+pdfplumber==0.11.4               # text layer of an uploaded PDF
+jellyfish==1.1.0                 # Jaro-Winkler title dedup in discovery
 
 # Retrieval (in-memory cosine — see ARCHITECTURE.md)
 numpy==2.2.1

@@ -1,13 +1,19 @@
-"""Stage 4 — hallucination judge (a different model family than the
-summarizer, via GitHub Models).
+"""Stage 4 — hallucination judge.
 
-For each claim the judge evaluates the claim against the top actual chunks
-of its *original source* — reusing the per-source embeddings from the
-retriever, not the passage the summarizer generated. A claim whose best
-source-similarity is below the floor is marked `low_confidence` without
-spending an LLM call. If the judge provider is unavailable, the claim is
-marked unverified and the run continues — verification never silently falls
-back to the summarizer's own family (see ProviderFactory.judge).
+Each claim is evaluated against the top actual chunks of its *original
+source* — reusing the per-source embeddings the retriever already built, not
+the passage the summarizer generated. That distinction is the whole point: a
+summarizer that invents a supporting quote would have that quote confirm the
+claim, so grading against the source is the only version that tests
+grounding rather than internal consistency.
+
+A claim whose best source-similarity is below the floor is marked
+`low_confidence` without spending an LLM call. If the judge provider is
+unavailable, the claim is marked unverified and the run continues.
+
+The judge model is resolved by role from the factory, so which model grades
+the summarizer's output is a config value rather than a call site here (see
+ProviderFactory.judge). It defaults to a second, cheaper Gemini model.
 
 That same `except ProviderError` path is what makes the run token budget
 degrade gracefully rather than fail: `BudgetExceededError` is a

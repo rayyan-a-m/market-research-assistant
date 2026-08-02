@@ -12,9 +12,9 @@ Two independent concerns, both regex-based and intentionally simple:
 
 Regex is not a complete defense against either problem — a determined
 adversarial page can phrase around these patterns, and PII regexes miss
-formats they weren't written for. It's cheap, catches the common cases,
-and is paired with a system-prompt guard at the LLM call site (see
-docs/langchain-middleware-reference.md) as the second layer. False
+formats they weren't written for. It's cheap, catches the common cases, and
+is paired with a system-prompt guard at the LLM call site
+(`INJECTION_GUARD_SYSTEM_PROMPT_ADDENDUM`, below) as the second layer. False
 positives here cost one redacted chunk, not the whole document, which is
 an acceptable trade for external, non-user-authored content.
 """

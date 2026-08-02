@@ -2,8 +2,9 @@
 
 Because the pipeline codes to the ChatProvider / EmbeddingProvider interfaces
 (and gets them via DI), we can inject deterministic fakes and exercise the
-real orchestration/retrieval/judge logic with zero network — the same seam
-that lets us swap Gemini for GitHub Models lets us swap in a stub for tests.
+real orchestration/retrieval/judge logic with zero network. The seam that lets
+a provider be swapped for another vendor is the same one that lets it be
+swapped for a stub, which is why every test in this suite runs offline.
 """
 
 from __future__ import annotations

@@ -2,9 +2,9 @@
 interface so callers never know a fallback happened except via logging.
 
 This is deliberately its own abstraction rather than relying solely on
-LangChain's `.with_fallbacks()` (see docs/langchain-middleware-reference.md):
-`.with_fallbacks()` only composes LangChain Runnables, so it can't fall
-back from, say, Brave Search to Serper — two unrelated REST APIs. A
+LangChain's `.with_fallbacks()`, which only composes LangChain Runnables and
+so can't fall back from, say, Brave Search to Serper — two unrelated REST
+APIs behind no shared Runnable base. A
 provider-level decorator works uniformly across every ChatProvider and
 SearchProvider implementation, vendor SDK or plain HTTP alike, which is
 the point of coding to the interface in the first place.

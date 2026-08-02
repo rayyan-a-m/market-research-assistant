@@ -4,11 +4,12 @@ adapters — a reviewer can diff this against openai_provider.py and see the
 identical pattern, just a different SDK and a different exception taxonomy
 mapped to the same normalized errors.
 
-Gemini (via the Google AI Studio API key) is the summarizer, the discovery
-ranking model, and the embedding provider. The judge deliberately runs on a
-different model family (GitHub Models, via the OpenAI-compatible adapter) so
-verification never grades the summarizer's own lineage — see
-ProviderFactory.judge() and DESIGN_DECISIONS.md #10.
+One Google AI Studio key drives the whole pipeline: summarizer, judge,
+discovery ranking, and embeddings. The judge runs on a cheaper Gemini model
+than the summarizer, which is a cross-model but same-family check — a stated
+compromise rather than the ideal, and the reason the judge is resolved by role
+so it can point elsewhere. See ProviderFactory.judge() and
+DESIGN_DECISIONS.md #10.
 """
 
 from __future__ import annotations
