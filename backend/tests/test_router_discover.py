@@ -73,7 +73,7 @@ def test_discover_rejects_ssrf_unsafe_url_with_422(client: TestClient) -> None:
 
 def test_discover_requires_auth_when_not_disabled() -> None:
     app = create_app()
-    # Force real auth (the local .env sets AUTH_DISABLED=true; override it)
+    # Pin settings so this asserts on the code, not on the ambient .env
     app.dependency_overrides[get_settings] = lambda: Settings(_env_file=None)
     resp = TestClient(app).post(
         "/api/runs/discover",

@@ -85,7 +85,7 @@ stretch goals from the brief are included: change detection (`/runs/{id}/changes
 diffs a run against the previous run with the same inputs) and monitoring
 (`/readyz`, request-ID correlation, per-run cost and token metrics).
 
-**155 tests, ruff, mypy, and a green CI on every push.** The tests run fully
+**163 tests, ruff, mypy, and a green CI on every push.** The tests run fully
 offline — no keys, no network — which is a property of the dependency
 injection rather than a happy accident.
 
@@ -328,7 +328,7 @@ waved through as "unresolvable."
 | Secrets in URLs and access logs | SSE is consumed with `fetch()` + `ReadableStream`, not `EventSource`, so the JWT rides in the `Authorization` header and never appears in a query string |
 | Cross-user data access | Every run-scoped query carries the Clerk user id; ownership is checked in the router and the repository |
 | Malicious PDF upload | MIME validation, text-only extraction, 10MB cap |
-| Auth bypass | Clerk session JWT verified against Clerk's JWKS on every protected route; the dev bypass is hard-disabled when `ENV=production` |
+| Auth bypass | Clerk session JWT verified against Clerk's JWKS on every protected route. The local-dev bypass needs *both* `AUTH_DISABLED=true` and `ENV != production`, so a deployment that sets the flag by accident is still closed — pinned by `tests/test_auth.py` |
 | Container compromise | The image runs as an unprivileged user — the process rendering attacker-controlled pages is the last one that should own the container |
 
 Each row above is covered by tests except the last, which is a property of the
