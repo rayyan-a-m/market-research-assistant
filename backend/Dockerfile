@@ -2,7 +2,10 @@ FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    # Install browsers to a shared path instead of $HOME/.cache, so the image
+    # can drop root without the runtime user losing track of Chromium.
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
 WORKDIR /app
 
@@ -14,10 +17,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Chromium + OS deps for Playwright (crawl4ai's engine)
-RUN python -m playwright install --with-deps chromium
+# Chromium + its OS-level deps (crawl4ai's engine). Must run as root for the
+# apt side of --with-deps, which is why the user switch comes after.
+RUN python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/ms-playwright
 
 COPY app ./app
+
+# Run as an unprivileged user: a fetcher that renders attacker-controlled pages
+# is the one process in this system you least want owning the container.
+RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
 
