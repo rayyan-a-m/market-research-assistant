@@ -1,13 +1,13 @@
 # Architecture
 
-The current, as-built architecture. The scale-out version — durable
-ARQ/Redis worker, pgvector, SSE replay — is a documented future
-enhancement: see [`FUTURE_ENHANCEMENTS.md`](FUTURE_ENHANCEMENTS.md) for the
-roadmap, with what each change buys and when it's worth adopting.
+The as-built architecture. The scale-out version — durable ARQ/Redis worker,
+pgvector, SSE replay — is deliberately not here; see
+[`FUTURE_ENHANCEMENTS.md`](FUTURE_ENHANCEMENTS.md) for what each of those
+buys and when it becomes worth adopting.
 
 ---
 
-## Layered separation (the important part)
+## Layered separation
 
 The system is organized so that responsibilities don't bleed across
 layers. Each layer depends only on the one below it, through an interface:
@@ -73,14 +73,18 @@ layers. Each layer depends only on the one below it, through an interface:
  judge:      gemini-flash-latest → gemini-2.5-flash             Brave adapter optional
 ```
 
-> The OpenAI adapter is kept as an **opt-in cross-family judge path**: set
-> `OPENAI_API_KEY` + `OPENAI_BASE_URL` (Groq, OpenRouter, OpenAI…) and the
-> factory routes the judge there instead, with no code change. By default
-> the judge runs on a second Gemini model — same family as the summarizer,
-> which is a weaker check, and that trade-off is stated rather than hidden
-> (see [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) #10). There is no
-> Anthropic adapter; the app isn't configured for it, so shipping one would
-> be dead code.
+> **The judge runs on a second Gemini model by default** (`gemini-flash-latest`
+> grading `gemini-pro-latest`). Same family as the summarizer, which is a
+> weaker check than a cross-*family* judge; the trade-off is argued in
+> [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) #10 rather than glossed over.
+>
+> The OpenAI-compatible adapter above is real and tested, not decoration.
+> Setting `OPENAI_API_KEY`, `OPENAI_BASE_URL` and a matching `JUDGE_MODEL`
+> routes verification to Groq, OpenRouter or OpenAI with no code change,
+> because `ProviderFactory.judge()` resolves by role. The deployed app leaves
+> it unset, and `/readyz` reports which path is live. There's no Anthropic
+> adapter: two adapters are enough to prove the seam generalizes, and a third
+> the app never constructs would just be dead code.
 
 - **Strategy:** callers hold a `ChatProvider` and don't know the concrete
   class.
@@ -92,6 +96,17 @@ layers. Each layer depends only on the one below it, through an interface:
   uniformly — including across two unrelated REST search APIs, which
   LangChain's own `.with_fallbacks()` can't do (it only composes
   Runnables). Both are used where each fits.
+
+Three of the five interface segregation and dependency rules are doing real
+work here rather than being cited. The interfaces are narrow enough that a
+search provider isn't forced to implement anything about tokens; the pipeline
+depends on `ChatProvider` rather than on `ChatGoogleGenerativeAI`, so the
+summarizer's provider could migrate mid-build without the pipeline being
+touched or re-tested; and every adapter and decorator is substitutable for the
+interface it implements, which is what makes the middleware stack below
+composable in any order. The payoff is measured in diffs: two forced model
+migrations during this build changed adapters, factory and config, and nothing
+above them.
 
 ---
 
@@ -259,8 +274,8 @@ at the end of the prompt.
     1. load the ORIGINAL scraped markdown for claim.source_url
     2. embed the claim; semantic-search the top-3 actual chunks
     3. if best similarity < threshold → low_confidence, no LLM call
-    4. the judge (a different model which is not same as Summarizer model) evaluates:
-       does {claim} follow from {actual chunks}?  — no self-grading
+    4. a judge model — never the summarizer's own instance — evaluates:
+       does {claim} follow from {actual chunks}?
     5. verdict ∈ supported | partial | unsupported | low_confidence
 ```
 
@@ -361,6 +376,16 @@ sits inside. Calibrating the real threshold is the model tier's job.
 
 ## Observability and abuse control
 
+**Two health endpoints, for two different questions.** `/healthz` is liveness
+only and deliberately calls nothing external: a Gemini outage should surface
+as a 5xx on the endpoint that needed Gemini, not as a container Azure decides
+to recycle. `/readyz` is the deep check — it makes a live call to Gemini,
+Serper and Postgres, reports each one separately, and echoes the effective
+non-secret config (env, models, frontend origin). One `curl` after a deploy
+answers "are the keys, the database and CORS actually wired up," which is the
+question you have at that moment. It returns 503 if any dependency fails, and
+it is kept off the liveness path on purpose.
+
 **Request correlation.** An ASGI middleware assigns (or forwards) a
 12-character request id, holds it in a `ContextVar`, and echoes it as
 `X-Request-ID`. A logging filter stamps it onto every record, so a
@@ -432,9 +457,9 @@ without needing a separate per-run stream token.
 
 ## Auth
 
-Clerk with **Google OAuth only** (no email/password, no magic links).
-Protected Next.js routes gate on the Clerk session; the FastAPI backend
-verifies the Clerk JWT via a single DI dependency and resolves the user
-id used for ownership checks. Rationale and the trade-off (excludes
-non-Google users, acceptable for this audience) in
-[DESIGN_DECISIONS.md](DESIGN_DECISIONS.md).
+Clerk with **Google OAuth + passwordless email** (a one-time verification
+code — no password to store or reset). Protected Next.js routes gate on the
+Clerk session; the FastAPI backend verifies the Clerk JWT via a single DI
+dependency and resolves the user id used for ownership checks — it doesn't care
+which method the user signed in with. Rationale in
+[DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) #14.

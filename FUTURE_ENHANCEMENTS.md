@@ -13,9 +13,9 @@ enhancement.
 
 The guiding principle: none of these are missing pieces. Each is a
 deliberate deferral, and the current code is structured so each can be
-adopted without rewriting business logic — the provider abstraction, the
-role-based factory, and the checkpointer seam were all built with these
-upgrades in mind.
+adopted without rewriting business logic — the provider interfaces, the
+role-based factory, and keeping pause state in one named module rather than
+scattered through the pipeline were all chosen with these upgrades in mind.
 
 That claim has since been tested. Three things listed here as future work —
 per-call cost attribution, a caching layer, and the change-detection and
@@ -156,6 +156,10 @@ support cases that need a per-call paper trail.
   sources fetched, claims total/verified, token counts, LLM call count,
   search-API hits, estimated cost, and dropped-attribution count persist to
   `runs.metrics` and render as a stats strip on the run detail page.
+  Operationally there's `/healthz` for liveness and `/readyz` for a deep
+  check of Gemini, Serper and Postgres plus the effective config, and every
+  log line carries a request id (`X-Request-ID`) so one run's path through
+  the pipeline can be pulled out of an aggregator.
 - **Distributed tracing — still future.** The metrics above are per-run
   aggregates, not spans. LangChain's OpenTelemetry callbacks + LangSmith,
   with Azure Monitor ingesting OTEL traces, would give per-stage timing and

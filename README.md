@@ -1,202 +1,189 @@
 # Market Research Intelligence Assistant
 
-A web application that collects, analyzes, and summarizes competitive
-market intelligence from public sources — grouping findings into themes,
-tracing every insight back to its source, and **verifying each claim
-against the original source content** with a cross-model LLM judge.
+Collects, analyzes and summarizes competitive market intelligence from public
+sources: groups findings into themes, traces every insight back to its source,
+and checks each claim against the original scraped text with a separate judge
+model before showing it to you.
 
-> **Scope note, up front:** this is deliberately a *lightweight*
-> application, scoped to the problem. The heavier production concerns you
-> might expect — a durable ARQ/Redis worker, pgvector, an SSE replay
-> buffer — are intentionally out of the current build and documented as a
-> roadmap in [`FUTURE_ENHANCEMENTS.md`](FUTURE_ENHANCEMENTS.md), with what
-> each one buys and when it's worth adding. Scoping to fit the requirement
-> is itself a design decision, and it's treated as one.
+| | |
+|---|---|
+| **Live app** | https://market-research-assistant-nine.vercel.app |
+| **API** | https://market-intel-api.greendune-83286828.eastus.azurecontainerapps.io |
+| **API health** | [`/healthz`](https://market-intel-api.greendune-83286828.eastus.azurecontainerapps.io/healthz) (liveness) · [`/readyz`](https://market-intel-api.greendune-83286828.eastus.azurecontainerapps.io/readyz) (checks Gemini, Serper and Postgres, and reports the effective config) |
 
----
-
-## Problem statement
-
-Product and go-to-market teams struggle to stay current on competitor
-activity because relevant information is scattered across blogs,
-newsrooms, announcements, and articles. Manually monitoring 5–10 sources
-is time-consuming and inconsistent — and worse, when a human *or* an AI
-summarizes those sources, there's no guarantee the summary is faithful
-to what the source actually said.
-
-This application lets a user provide competitor names, topics, and source
-URLs, then fetches, analyzes, and summarizes the material into a
-structured, source-traced report — where **every claim is independently
-checked against the original scraped text**, and anything that can't be
-grounded is flagged rather than presented as fact.
+Sign in with Google or with a one-time code sent to any email address.
 
 ---
 
-## Solution approach
+## Problem
 
-A two-phase run, no background queue — the pipeline runs in-process and
-streams progress to the browser over SSE.
+Product and go-to-market teams struggle to stay current on competitor activity
+because the relevant information is scattered across blogs, newsrooms,
+announcements and articles. Monitoring 5–10 sources by hand is slow and
+inconsistent. The harder problem is the one that appears *after* you automate
+it: when an LLM summarizes those sources, nothing guarantees the summary is
+faithful to what the sources actually said, and a confident, well-formatted,
+wrong report is worse than no report.
 
-**Phase A — Source discovery (with a human approval gate).** Before any
-research, the system runs a web search per competitor and proposes
-additional sources the user may not have known to include. Every
-candidate passes the SSRF guard and is shown to the user, who approves,
-rejects, or skips. **The system never adds a source silently** — this is
-a trust mechanism, not a convenience feature: a user must be able to
-vouch for every source behind every insight. Discovery is a **deterministic
-service** (search → embedding-rank → dedup → SSRF filter), not an agent —
-the judgement that matters is the user's approval, not an LLM's; ranking is
-a rule, so it's coded as one (see [DESIGN_DECISIONS #11](DESIGN_DECISIONS.md)).
-
-**Phase B — Research pipeline (four stages, streamed):**
-
-1. **Input guard** — Pydantic bounds (`max_urls=10`, `max_topics=5`),
-   SSRF guard, HTTPS-only, dedup.
-2. **Fetch** — crawl4ai fetches URLs concurrently (bounded). A source that
-   can't yield usable content isn't a silent failure — and "can't yield
-   usable content" is broader than a hard error: a login/authwall page
-   returns HTTP 200 with real markup, so the fetcher *classifies* the result
-   and treats a thin/authwall page as blocked too. When a source is blocked,
-   the run *pauses in place* and offers the user two choices — **paste the
-   article text** (it re-enters the pipeline identically; downstream stages
-   don't know or care how a source arrived) or **continue without that
-   source**. (Uploading a PDF is a roadmap item — see
-   [`FUTURE_ENHANCEMENTS.md`](FUTURE_ENHANCEMENTS.md).)
-3. **Retrieve (in-memory RAG)** — each source is chunked, embedded, and
-   retrieved **per-source** (top passages per topic, per URL separately)
-   so a claim about Competitor A can never be attributed to Competitor B's
-   page. Context blocks are ordered highest-relevance-first / second-last
-   to mitigate "lost in the middle."
-4. **Summarize + Judge** — Gemini produces a structured report
-   (schema-enforced `source_url` on every claim, no prose parsing). Then a
-   **separate judge model evaluates each claim against the original
-   scraped text** — not against the passage
-   Gemini generated. That distinction is the whole point: if the summarizer
-   fabricates a convincing passage, judging it against itself would
-   rubber-stamp the fabrication. Judging against the *source* catches it. The
-   judge is a separate, cheaper model; a genuinely cross-*family* judge is
-   ideal and available via one config change, but the default stays within the
-   Gemini family for this scope — a stated compromise, detailed below.
-
-Previous runs are persisted; the report is assembled from a normalized
-`claims` table rather than a denormalized JSON blob.
+So this application does two jobs. It produces the structured summary, and it
+independently verifies it. Anything that can't be grounded in a source is
+flagged rather than presented as fact.
 
 ---
 
-## Build status (honest)
+## How it works
 
-The application is built end-to-end. What that means precisely — because
-honesty about what's been *runtime-verified* matters:
+A run happens in two phases. There is no background queue; the pipeline runs
+in-process and streams progress to the browser over SSE.
 
-**Built + unit-tested + statically checked (150 tests, ruff + mypy + CI green):**
-- **Provider abstraction** — interfaces + per-vendor adapters + registry
-  factory (Strategy / Adapter / Factory), retries/timeouts/normalized
-  errors at the adapter boundary. Gemini chat + embeddings, an optional
-  OpenAI-compatible judge path, Serper web search, fallback composition,
-  plus a middleware stack (metering, budget cap, circuit breaker, cache)
-  composed as decorators of the same interfaces.
-- **Pipeline** — fetch (crawl4ai + SSRF + sanitize + unreachable-source
-  pause), in-memory per-source retrieval (chunk → embed → cosine →
-  primacy/recency ordering), summarizer (structured output), judge (verify
-  vs. original source, gated by a structural attribution check and then a
-  similarity floor). Retrieval math and ordering are unit-tested.
-- **Guardrail ladder** — grounding enforced as a sequence of checks ordered
-  by cost, so the expensive LLM judge only sees what the free checks
-  couldn't decide. Table in [ARCHITECTURE.md](ARCHITECTURE.md).
-- **Evaluation harness** — a labelled dataset of fictional sources with
-  planted hallucinations, scored in three tiers: a deterministic tier in CI
-  (no keys, no network), a **trajectory tier** that checks each defect is
-  routed to the cheapest correct rung of the guardrail ladder, and a
-  live-model tier behind `pytest -m eval`. Currently **60% of planted
-  hallucinations are caught before any LLM call**, at a 100% pass rate on
-  faithful claims. See [`backend/evals/`](backend/evals/).
-- **Discovery** — deterministic search → rank → dedup (URL + Jaro-Winkler)
-  → SSRF filter; dedup is unit-tested.
-- **API** — runs router (discover/list/detail/candidates/approve/start-SSE),
-  sources router (paste/skip recovery), asyncpg data layer, Clerk JWT auth
-  (JWKS) with a local-dev bypass.
-- **Frontend** — Clerk (Google-only) auth + protected routes, research form,
-  approval gate, live SSE progress (fetch + ReadableStream), source-fallback
-  (paste / continue-without), dashboard, run-detail report view with a per-run
-  cost/usage panel. Typechecks, lints, builds.
-- Security core (SSRF IPv4+IPv6, sanitizer), input bounds, Dockerfile, CI.
+### Phase A — source discovery, behind a human approval gate
 
-**Not yet runtime-verified (needs live keys + deploy — that's your step):**
-- End-to-end runs against the real Gemini / Serper APIs, a
-  live crawl4ai browser, and a real Supabase database. These paths are
-  written and type-checked but exercised for the first time when you deploy
-  with real credentials (unit tests deliberately mock the network — CI has
-  no keys). Follow [`deployment.md`](deployment.md) and the smoke-test in §8.
+Before any research, the system runs a web search per competitor and proposes
+additional sources you might not have thought to include. Every candidate
+passes the SSRF guard, and every candidate is shown to you to approve, reject
+or skip. Nothing is ever added silently. That's a trust decision rather than a
+UX one: a report is only worth forwarding if the person sending it can vouch
+for every source behind it.
 
-The layers a reviewer pokes at for correctness and security (providers,
-SSRF, sanitizer, retrieval, dedup, validation) carry the unit tests; the
-integration surface is verified on first deploy.
+Discovery is deterministic — search, rank by embedding similarity, dedupe,
+SSRF-filter — not an agent. Ranking is a rule, so it's written as one
+([DESIGN_DECISIONS #11](DESIGN_DECISIONS.md)).
+
+### Phase B — the research pipeline
+
+1. **Input guard.** Pydantic bounds (`max_urls=10`, `max_topics=5`), SSRF
+   check, HTTPS only, dedupe.
+2. **Fetch.** crawl4ai fetches URLs concurrently. A source that can't yield
+   usable content isn't a silent failure, and "can't yield usable content" is
+   broader than "returned an error": a login wall answers with HTTP 200 and
+   real markup, so the fetcher classifies the *result* instead of trusting the
+   status code. When a source is blocked the run pauses in place and offers
+   two choices — paste the article text, or continue without it. Pasted text
+   re-enters the pipeline identically; nothing downstream knows or cares how a
+   source arrived.
+3. **Retrieve.** Each source is chunked, embedded and retrieved *per source*,
+   so a claim about Competitor A can't be matched to Competitor B's page.
+   Context blocks are ordered highest-relevance first and second-highest last,
+   to work with rather than against the "lost in the middle" effect.
+4. **Summarize and judge.** Gemini produces a structured report where every
+   claim carries a `source_url` as a schema field, not as something parsed out
+   of prose. A separate judge model then evaluates each claim against the
+   original scraped text — not against the passage the summarizer wrote. That
+   distinction is the point of the stage. A summarizer that invents a
+   supporting quote would have that quote confirm its own claim; grading
+   against the source catches it.
+
+Runs are persisted, and the report is assembled from a normalized `claims`
+table rather than a JSON blob.
 
 ---
 
-## Technology stack
+## What's built
+
+Everything above is built, deployed and running at the URL up top. Both
+stretch goals from the brief are included: change detection (`/runs/{id}/changes`
+diffs a run against the previous run with the same inputs) and monitoring
+(`/readyz`, request-ID correlation, per-run cost and token metrics).
+
+**155 tests, ruff, mypy, and a green CI on every push.** The tests run fully
+offline — no keys, no network — which is a property of the dependency
+injection rather than a happy accident.
+
+- **Provider layer.** Three interfaces (`ChatProvider`, `EmbeddingProvider`,
+  `SearchProvider`), per-vendor adapters, and a registry factory that resolves
+  a provider by *role*. Retries, timeouts and error normalization live at the
+  adapter boundary. On top of that, a middleware stack — metering, budget cap,
+  circuit breaker, cache, embedding retry — composed as decorators of those
+  same interfaces.
+- **Pipeline.** Fetch (SSRF, sanitize, authwall classification, pause and
+  recover), per-source retrieval (chunk, embed, cosine, primacy/recency
+  ordering), summarizer, judge.
+- **Guardrail ladder.** Grounding enforced as a sequence of checks ordered by
+  cost, so the expensive model only sees what the free checks couldn't decide.
+  Table in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Evaluation harness.** A labelled dataset of fictional sources with planted
+  hallucinations, scored in three tiers: a deterministic tier in CI, a
+  trajectory tier that checks each defect is caught at the *cheapest correct*
+  rung, and a live-model tier behind `pytest -m eval`. Currently **60% of
+  planted hallucinations are caught before any LLM call, at a 100% pass rate
+  on faithful claims**. See [`backend/evals/`](backend/evals/).
+- **API.** Runs router (discover, list, detail, candidates, approve, start,
+  rerun, cancel, delete, changes), source-recovery router, asyncpg data layer,
+  Clerk JWT auth via JWKS with a local-dev bypass that is hard-disabled in
+  production.
+- **Frontend.** Clerk auth and protected routes, research form, approval gate,
+  live SSE progress, blocked-source recovery, dashboard, and a run report with
+  per-claim verdicts and a cost/usage panel.
+
+---
+
+## Stack
 
 | Layer | Technology |
 |---|---|
 | Frontend | Next.js 15 (App Router), TypeScript, Tailwind CSS |
 | Backend | FastAPI, Python 3.12 |
 | AI orchestration | LangChain (LCEL chains + structured output) |
-| Summarizer | Google `gemini-pro-latest` (fallback: `gemini-flash-latest`) |
-| Judge | Google `gemini-flash-latest` (fallback: `gemini-2.5-flash`); any OpenAI-compatible provider via config |
+| Summarizer | Google `gemini-pro-latest` (fallback `gemini-flash-latest`) |
+| Judge | Google `gemini-flash-latest` (fallback `gemini-2.5-flash`) |
 | Embeddings | Google `gemini-embedding-001` |
-| Retrieval | In-memory (NumPy cosine), per-source isolation |
-| Web scraping | crawl4ai |
-| PDF extraction | pdfplumber |
+| Retrieval | In-memory NumPy cosine, isolated per source |
+| Scraping | crawl4ai |
+| PDF text | pdfplumber |
 | Discovery search | Serper.dev |
-| Auth | Clerk (Google OAuth only) |
+| Auth | Clerk (Google OAuth + one-time email code) |
 | Persistence | Supabase (PostgreSQL 16) |
 | Backend hosting | Azure Container Apps (single replica) |
 | Frontend hosting | Vercel |
 | CI | GitHub Actions |
 
-Model IDs and the rationale for each choice are in
-[Design decisions](DESIGN_DECISIONS.md) and the stack table above.
-
 ---
 
-## Repository structure
+## Repository layout
 
 ```
 .
-├── README.md                 ← this file
-├── ARCHITECTURE.md           ← the current architecture in detail
-├── DESIGN_DECISIONS.md       ← every decision, with the alternative rejected
-├── deployment.md             ← full Azure + Vercel deploy + key generation
-├── FUTURE_ENHANCEMENTS.md    ← the scale-out roadmap (ARQ/Redis, pgvector, …)
+├── ARCHITECTURE.md           the as-built architecture in detail
+├── DESIGN_DECISIONS.md       every decision, with the alternative rejected
+├── FUTURE_ENHANCEMENTS.md    the scale-out roadmap (ARQ/Redis, pgvector, …)
+├── deployment.md             Azure + Vercel deploy, key generation, env vars
 ├── backend/
 │   ├── app/
-│   │   ├── main.py           ← FastAPI app factory + lifespan (db pool)
-│   │   ├── config.py         ← pydantic-settings
-│   │   ├── core/             ← errors, security (SSRF), sanitize, auth (Clerk)
-│   │   ├── models/           ← Pydantic schemas (bounds + SSRF enforced)
-│   │   ├── providers/        ← Strategy/Adapter/Factory for AI providers
-│   │   ├── pipeline/         ← fetch → retrieve → summarize → judge + SSE
-│   │   ├── discovery/        ← deterministic source discovery + dedup
-│   │   ├── db/               ← asyncpg pool + repository (SQL)
-│   │   └── routers/          ← HTTP layer (thin): runs, sources, health
-│   ├── db/schema.sql         ← DDL: run once in Supabase (deployment.md §2.4)
+│   │   ├── main.py           app factory + lifespan (db pool)
+│   │   ├── config.py         pydantic-settings
+│   │   ├── core/             errors, SSRF, sanitize, auth, rate limit, observability
+│   │   ├── models/           Pydantic schemas (bounds + SSRF enforced here)
+│   │   ├── providers/        interfaces, adapters, factory, middleware
+│   │   ├── pipeline/         fetch → retrieve → summarize → judge, + SSE
+│   │   ├── discovery/        deterministic source discovery + dedup
+│   │   ├── db/               asyncpg pool + repository
+│   │   └── routers/          HTTP layer, kept thin
+│   ├── evals/                labelled dataset + scorer + trajectory checks
+│   ├── db/schema.sql         DDL — run once in Supabase
 │   ├── tests/
 │   └── Dockerfile
 └── frontend/
     └── src/
-        ├── app/              ← App Router pages (research, dashboard, sign-in)
-        ├── components/       ← ApprovalGate, SourceFallback, ReportView, …
-        ├── middleware.ts     ← Clerk route protection
-        └── lib/              ← typed API client (incl. fetch-SSE) + types
+        ├── app/              App Router pages
+        ├── components/       ApprovalGate, SourceFallback, ReportView, …
+        ├── middleware.ts     Clerk route protection
+        └── lib/              typed API client (incl. fetch-SSE) + types
 ```
+
+Each layer depends only on the one below it, through an interface. The
+provider layer is the only place a vendor SDK is imported, so adding a
+provider means writing an adapter and registering it — the pipeline above it
+doesn't change and doesn't get re-tested. Keeping the modules that *use* a
+model dependent on an interface rather than on `ChatGoogleGenerativeAI` is
+what made two forced model migrations mid-build into config edits.
 
 ---
 
-## Local build & run
+## Running it locally
 
-**Prerequisites:** Node 20+, Python 3.12+, Docker (for the backend
-container / crawl4ai's Chromium), and the API keys from
-[`deployment.md`](deployment.md) §2.
+**Prerequisites:** Node 20+, Python 3.12+, and the API keys described in
+[`deployment.md`](deployment.md) §2. Docker is optional (only for running the
+backend as a container).
 
 ### Backend
 
@@ -204,16 +191,19 @@ container / crawl4ai's Chromium), and the API keys from
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env          # fill in keys — see deployment.md §2–3
-python -m playwright install chromium   # for crawl4ai
+cp .env.example .env               # fill in keys — deployment.md §2–3
+python -m playwright install chromium   # crawl4ai's browser
 uvicorn app.main:app --reload --port 8000
-# API docs at http://localhost:8000/docs  (health: /healthz)
+# docs at http://localhost:8000/docs · health at /healthz
 ```
 
-Run the checks the CI runs:
+Set `AUTH_DISABLED=true` in `.env` to run the API before Clerk is configured.
+That flag is ignored when `ENV=production`.
+
+Run what CI runs:
 
 ```bash
-ruff check . && mypy app && pytest -q
+ruff check . && mypy app evals && pytest -q
 ```
 
 ### Frontend
@@ -221,164 +211,165 @@ ruff check . && mypy app && pytest -q
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local   # set NEXT_PUBLIC_API_URL + Clerk keys
+cp .env.local.example .env.local   # NEXT_PUBLIC_API_URL + Clerk keys
 npm run dev                        # http://localhost:3000
 ```
 
-Deploying to Azure + Vercel: follow [`deployment.md`](deployment.md)
-end to end.
+Deploying your own copy: follow [`deployment.md`](deployment.md) end to end.
 
 ---
 
-## AI tools, models, and references
+## AI models, tools and references
 
 ### Models
 
-| Model | Provider | Role | Why this model |
-|---|---|---|---|
-| `gemini-pro-latest` | Google (AI Studio) | Summarizer | The quality-critical stage — see rationale below |
-| `gemini-flash-latest` | Google (AI Studio) | Summarizer fallback | Same family, for outage/rate-limit resilience |
-| `gemini-flash-latest` | Google (AI Studio) | Hallucination judge | A cheaper, different-*tier* model grading the Pro model's output. Honest caveat: same family — see the note below |
-| `gemini-2.5-flash` | Google (AI Studio) | Judge fallback | Keeps verification available if the primary judge model is unavailable |
-| `gemini-embedding-001` | Google (AI Studio) | Embeddings | Retrieval ranking, discovery ranking, and judge similarity |
+| Model | Role | Why |
+|---|---|---|
+| `gemini-pro-latest` | Summarizer | The quality-critical stage — see below |
+| `gemini-flash-latest` | Summarizer fallback | Same family, for rate-limit and outage resilience |
+| `gemini-flash-latest` | Hallucination judge | Cheaper, different tier, grading the Pro model's output |
+| `gemini-2.5-flash` | Judge fallback | Keeps verification available if the primary judge is down |
+| `gemini-embedding-001` | Embeddings | Retrieval ranking, discovery ranking, judge similarity |
 
-### Model choice rationale
+All five run on Google AI Studio, from one key.
 
-**Summarizer — why Gemini 2.5 Pro (is it the best for this task?):**
-The summarizer is the single stage that determines output quality. Its job is
-hard: read several labelled competitor sources, group findings into coherent
-themes, and emit **schema-valid structured output** where every claim carries
-the *correct* `source_url`. That demands three things together — strong
-multi-source reasoning, reliable structured-output/tool-use adherence, and
-long-context comprehension. Gemini **2.5 Pro** is Google's strongest model on
-exactly those axes (and its large context window comfortably holds a
-multi-source run), so it's the right default here. A weaker model at this
-stage produces vague themes and mis-attributed claims — and while the
-cross-family judge *catches* unsupported claims, you still want the generator
-to make fewer errors and surface more real, well-grounded ones. So yes: for
-the synthesis step, Pro is the best fit among Gemini's options.
+**Why Pro for the summarizer.** This is the stage that determines output
+quality, and its job needs three things at once: multi-source reasoning
+across several labelled competitor documents, reliable structured-output
+adherence, and enough context to hold a multi-source run. Gemini 2.5 Pro is
+the strongest of Google's line on those axes. A weaker model here produces
+vague themes and mis-attributed claims, and while the judge catches
+unsupported claims after the fact, you still want the generator making fewer
+errors and surfacing more real ones.
 
-**The honest trade-off:** Pro has the strictest free-tier rate limits and the
-highest latency of the Gemini line. If a deployment cares more about
-throughput / staying inside rate limits than about peak synthesis quality,
-**Gemini Flash** is a legitimate primary — it's a one-env-var change
-(`SUMMARIZER_MODEL=gemini-flash-latest`). Pro is the default because this is a
-research tool where a correct, well-structured report matters more than
-shaving a few seconds. Flash is also the built-in fallback for outage/rate-limit resilience.
+The cost is that Pro carries the tightest free-tier rate limits and the
+highest latency. If a deployment cares more about throughput than peak
+synthesis quality, Flash is a legitimate primary and the switch is one
+environment variable (`SUMMARIZER_MODEL=gemini-flash-latest`). Pro is the
+default because for a research tool a correct report beats a fast one.
 
-**Embeddings — `gemini-embedding-001`:** Google's current production embedding
-model on the AI Studio API; strong retrieval quality at effectively zero cost,
-and it keeps the whole embed → retrieve → judge-similarity path on one
-provider/key. (The older `text-embedding-004` has been retired from the API,
-so `gemini-embedding-001` is the right current choice; it's a one-line
-`EMBEDDING_MODEL` swap if Google ships a newer one.)
+**Why `gemini-embedding-001`.** Google's current production embedding model
+on the AI Studio API, strong retrieval quality at effectively zero cost, and
+it keeps embed → retrieve → judge-similarity on one provider and one key. Its
+predecessor `text-embedding-004` has been retired, which is exactly why the
+model name is a config value.
 
-**Discovery uses no chat LLM at all** — it ranks candidates with
-`gemini-embedding-001` similarity, not a generative model, because ranking is a
-rule (see [DESIGN_DECISIONS #11](DESIGN_DECISIONS.md)). That's the "don't put
-an LLM where a rule works" principle, and it's why there's no separate
-"discovery model."
+**Discovery uses no chat model at all.** It ranks candidates by embedding
+similarity. There is no decision in "query these terms, embed the snippets,
+sort by similarity, drop duplicates and unsafe URLs" that an agent loop would
+make better than a function, and an agent there would add latency,
+non-determinism and cost while making the behaviour harder to test.
 
-> **On the judge — a stated compromise, not a clean win.** The ideal is a
-> judge from a *different model family*, because same-family judging is biased
-> toward finding its own lineage's output plausible. For the scope of this
-> application the default judge is a second, cheaper Gemini model — a
-> cross-*model* check within the same family. It still tests grounding against
-> the original source (the property that matters most), but it is weaker than
-> a cross-family judge: shared pretraining means shared blind spots.
->
-> The abstraction keeps this a config decision, not a rewrite: set
-> `OPENAI_API_KEY` + `OPENAI_BASE_URL` (Groq, OpenRouter, OpenAI) and
-> `JUDGE_MODEL`, and the factory routes the judge to a genuinely different
-> family with **no code change**. If the judge provider fails, the stage marks
-> claims *unverified* and the run continues. How well the judge actually
-> performs isn't left to assertion — it's measured; see the evaluation harness
-> in [`backend/evals/`](backend/evals/).
+### On the judge — a real limitation, stated
+
+The ideal hallucination judge comes from a *different model family* than the
+summarizer, because same-family judging is biased toward finding its own
+lineage's output plausible. This app ships a second, cheaper Gemini model: a
+cross-*model*, same-family check. It still tests each claim against the
+original source, which is the property that matters most, but shared
+pretraining means shared blind spots, and it is weaker than a genuine
+cross-family judge.
+
+It stays that way for scope reasons — one provider, one key, no extra
+dependency. What keeps it from being a permanent choice is that the judge is
+resolved by role rather than constructed at the call site. A second adapter
+for OpenAI-compatible endpoints (Groq, OpenRouter, OpenAI) is in the codebase
+and tested; setting `OPENAI_API_KEY`, `OPENAI_BASE_URL` and a matching
+`JUDGE_MODEL` routes verification to another family with no code change. The
+deployed app doesn't use that path, and `/readyz` reports which one is live.
+
+If the judge fails entirely, its claims are marked unverified and the run
+continues. And how well it performs isn't asserted, it's measured — see
+[`backend/evals/`](backend/evals/).
 
 ### Libraries
 
-`langchain` / `langchain-google-genai` / `langchain-openai` (orchestration,
-structured output, `.with_retry()` — the OpenAI package targets any
-OpenAI-compatible endpoint, e.g. Groq / OpenRouter / OpenAI, for the optional
-cross-family judge), `crawl4ai` (LLM-oriented
-scraping), `pdfplumber` (PDF text), `jellyfish` (Jaro-Winkler dedup),
-`asyncpg` (Postgres), `PyJWT` (Clerk JWT verification), `httpx` (search
-APIs), `pydantic` / `pydantic-settings` (validation + config), `numpy`
-(in-memory cosine retrieval).
-
-The LCEL patterns this project uses (`.with_retry()`, `.with_fallbacks()`,
-`.with_structured_output()`) — plus the agent/middleware patterns that were
-reviewed but deliberately **not** adopted — are applied in the provider
-adapters (`app/providers/`) and the composable middleware stack
-(`app/providers/middleware.py`).
+`langchain` and `langchain-google-genai` for orchestration, structured output
+and `.with_retry()`; `langchain-openai` for the alternate judge adapter;
+`crawl4ai` for scraping; `pdfplumber` for PDF text; `jellyfish` for
+Jaro-Winkler dedup; `asyncpg` for Postgres; `PyJWT` for Clerk JWT
+verification; `httpx` for the search APIs; `pydantic` and
+`pydantic-settings`; `numpy` for in-memory cosine retrieval.
 
 ### Prompting approach
 
-- **Schema-enforced attribution** — every claim's `source_url` is
-  constrained to the labelled source URLs via structured output, so
-  cross-source attribution is prevented at the schema level.
-- **Judge against source truth** — each claim is evaluated against the
-  top actual chunks of the *original scraped markdown*, with a
-  similarity threshold below which the claim is marked `low_confidence`
-  without spending an LLM call.
-- **Primacy/recency context ordering** — highest-relevance source first,
-  second-highest last (Liu et al., "Lost in the Middle", 2023).
-- **Injection guard** — a system-prompt instruction to ignore embedded
-  directives, layered on top of regex sanitization of scraped content.
+- **Attribution is a schema field.** Every claim's `source_url` is
+  constrained by structured output to one of the labelled source URLs, so
+  cross-source attribution is prevented at the schema level rather than
+  requested in a prompt.
+- **The judge reads source truth.** Each claim is evaluated against the top
+  chunks of the original scraped markdown, with a similarity floor below
+  which the claim is marked `low_confidence` without spending an LLM call.
+- **Context ordering.** Highest-relevance source first, second-highest last
+  (Liu et al., *Lost in the Middle*, 2023).
+- **Injection guard.** A system-prompt instruction to ignore embedded
+  directives, layered on top of regex sanitization of all source text.
 
-### Generative AI usage disclosure
+### Use of generative AI in building this
 
-This project was built with assistance from **Claude (Anthropic)** for
-architecture design, code scaffolding, and documentation drafting. All
-code has been reviewed and is the author's responsibility; the test suite
-is the mechanism that keeps AI-generated code honest (it caught a real
-IPv4-only SSRF bug in the security guard during development). Nothing here
-was accepted unread.
-
----
-
-## Security design
-
-| Threat | Mitigation | Status |
-|---|---|---|
-| SSRF (incl. Azure IMDS at 169.254.169.254) | Pre-fetch IP resolution blocklist, IPv4 + IPv6, on user URLs *and* discovery candidates | Implemented + tested |
-| Prompt injection in scraped/pasted content | Regex sanitization + system-prompt guard, applied to all source text regardless of origin | Implemented + tested |
-| PII leakage from competitor pages into reports | Light email/phone redaction in the same sanitize pass | Implemented + tested |
-| LLM cost abuse | `max_urls`/`max_topics` enforced at the Pydantic boundary | Implemented + tested |
-| Secrets in query strings / logs | SSE is a `fetch()` stream, so the Clerk JWT rides in the `Authorization` header — never in a URL or access log (no token in the query string at all) | Implemented |
-| Cross-user data access | Every run-scoped query carries the Clerk user id; ownership checked in the router + repository (RLS is defense-in-depth only — see [`schema.sql`](backend/db/schema.sql) header) | Implemented |
-| Malicious PDF upload | MIME validation + text-only `pdfplumber` extraction + 10MB cap | Implemented |
-| Auth bypass | Clerk session JWT verified against Clerk's JWKS on every protected route; dev bypass hard-disabled when `ENV=production` | Implemented |
+Built with assistance from **Claude (Anthropic)** for architecture
+discussion, code scaffolding and documentation drafting. The design decisions,
+the review of every line, and the results are mine. The test suite is what
+keeps AI-written code honest here — it caught a real IPv4-only bug in the
+SSRF guard during development, where an IPv6 loopback literal was being
+waved through as "unresolvable."
 
 ---
 
-## Cost note
+## Security
 
-This build is designed to run at **≈ $0**: summarizer, judge, discovery
-ranking, and embeddings all run on Google AI Studio's free tier. The only
-structural cost driver is the judge — one call per claim — and it's gated
-by a ladder of cheaper checks: a claim citing an unfetched URL is dropped
-for free, and a claim with no closely-matching source content is resolved by
-an embedding comparison, both before any LLM call. On the evaluation dataset
-those free rungs resolve 6 of 15 claims. A per-run token budget
-(`RUN_TOKEN_BUDGET`) is a hard backstop against a pathological run: on
-exhaustion the run degrades to partially-verified rather than spending on. The free tiers are **rate-limited**,
-so the real constraint is requests-per-minute, not dollars; hard input
-bounds (`MAX_URLS=10`, `MAX_TOPICS=5`) keep a single run well inside them.
-Every run records its own usage — token counts, LLM calls, **search-API
-hits**, and an **estimated cost** at standard paid rates — surfaced in a
-per-run cost/usage panel on the report page, so the free-tier headroom is
-visible rather than guessed. Full breakdown in [`deployment.md`](deployment.md) §8.
+| Threat | Mitigation |
+|---|---|
+| SSRF, including Azure IMDS at 169.254.169.254 | Pre-fetch IP resolution blocklist, IPv4 and IPv6, on user URLs *and* discovery candidates |
+| Prompt injection in scraped or pasted content | Regex sanitization plus a system-prompt guard, applied to all source text regardless of origin |
+| Prompt injection in the user's own guidance field | Separately sanitized — the blast radius is a colleague who reads the forwarded report |
+| PII leaking from competitor pages into reports | Light email/phone redaction in the same pass |
+| LLM cost abuse | Input bounds at the Pydantic boundary, a per-run token budget, and a per-user sliding-window rate limit on the expensive endpoints |
+| Secrets in URLs and access logs | SSE is consumed with `fetch()` + `ReadableStream`, not `EventSource`, so the JWT rides in the `Authorization` header and never appears in a query string |
+| Cross-user data access | Every run-scoped query carries the Clerk user id; ownership is checked in the router and the repository |
+| Malicious PDF upload | MIME validation, text-only extraction, 10MB cap |
+| Auth bypass | Clerk session JWT verified against Clerk's JWKS on every protected route; the dev bypass is hard-disabled when `ENV=production` |
+| Container compromise | The image runs as an unprivileged user — the process rendering attacker-controlled pages is the last one that should own the container |
+
+Each of these is unit-tested apart from the last two, which are deployment
+properties.
+
+> The PDF path is worth one note of precision: `POST /sources/upload` is
+> implemented, authenticated and bounded, but the recovery UI deliberately
+> offers only paste and skip, to keep that moment to two clear choices.
+> Surfacing upload in the UI is [FUTURE_ENHANCEMENTS](FUTURE_ENHANCEMENTS.md) #8.
 
 ---
 
-## Design decisions
+## Cost
 
-Every significant decision — with the **alternative that was rejected**
-and the failure mode it avoids — is in
-[**DESIGN_DECISIONS.md**](DESIGN_DECISIONS.md). The architecture in
-detail is in [**ARCHITECTURE.md**](ARCHITECTURE.md).
+The whole build is designed to run at roughly **$0**. Summarizer, judge,
+discovery ranking and embeddings all sit on Google AI Studio's free tier.
 
-## Live application
+The one structural cost driver is the judge, which runs once per claim, and
+it's gated by cheaper checks first: a claim citing a URL that was never
+fetched is dropped for free, and a claim with no closely-matching source
+content is resolved by an embedding comparison. On the evaluation dataset
+those free rungs settle 6 of 15 claims before any model is called.
+`RUN_TOKEN_BUDGET` is a hard backstop against a pathological run; on
+exhaustion the run degrades to partially verified rather than spending on.
 
-**URL:** _(populated after deploy — see [`deployment.md`](deployment.md))_
+Because the free tiers are rate-limited, the real constraint is
+requests-per-minute rather than dollars, and the input bounds keep a single
+run well inside them. Every run records its own token counts, LLM calls,
+search-API hits and an estimated cost at standard paid rates, shown in a
+panel on the report page — so the headroom is visible rather than guessed.
+
+---
+
+## Further reading
+
+- [**ARCHITECTURE.md**](ARCHITECTURE.md) — layering, the provider middleware
+  stack, the guardrail ladder, the run lifecycle, observability.
+- [**DESIGN_DECISIONS.md**](DESIGN_DECISIONS.md) — every significant decision
+  with the alternative that was rejected and the failure mode it avoids,
+  including the agentic patterns that were considered and deliberately not
+  used.
+- [**FUTURE_ENHANCEMENTS.md**](FUTURE_ENHANCEMENTS.md) — what a scale-out
+  version changes, what each change buys, and when it's worth adopting.
+- [**deployment.md**](deployment.md) — deploying your own copy end to end.

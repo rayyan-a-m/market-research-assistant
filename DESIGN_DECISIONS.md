@@ -1,19 +1,20 @@
 # Design Decisions
 
-Each decision below lists the **choice**, the **alternative rejected**,
-the **failure mode avoided**, and its **status** (implemented / designed).
+Each decision below lists the **choice**, the **alternative rejected**, the
+**failure mode avoided**, and where the code and tests for it live. Everything
+in this document is built and deployed; things that were considered and *not*
+built are in the last section, and things deferred to a larger version are in
+[`FUTURE_ENHANCEMENTS.md`](FUTURE_ENHANCEMENTS.md).
 
-A recurring meta-decision runs through several entries: scoping this as a
-lightweight application and deferring heavier production concerns (durable
-queue, pgvector, SSE replay) rather than building them speculatively.
-Those deferrals are laid out — with what each buys and when it's worth
-adopting — in [`FUTURE_ENHANCEMENTS.md`](FUTURE_ENHANCEMENTS.md). Scoping to
-fit the requirement is treated here as a first-class design decision, not an
-omission.
+One meta-decision runs through several entries: scoping this as a lightweight
+application, and deferring heavier production concerns — a durable queue,
+pgvector, SSE replay — rather than building them speculatively. Choosing not
+to build something is a design decision too, so those are argued here with the
+same structure as the things that were built.
 
 ---
 
-## Implemented
+## Foundations: providers, boundaries and cross-cutting concerns
 
 ### 1. Provider abstraction: Strategy + Adapter + Factory
 
@@ -34,9 +35,11 @@ from an early Claude/OpenAI plan to **Gemini** for summarization,
 embeddings, and discovery ranking. Then the judge's original host (GitHub
 Models) was retired mid-build and the judge had to move again. Both
 migrations touched only the adapters, the factory, and config — no pipeline
-code, no re-test of business logic. The abstraction also gives one obvious
-home for retries, timeouts, and error mapping, and later became the seam the
-whole middleware stack hangs off (#5a).
+code, no re-test of business logic. That's dependency inversion earning its
+keep rather than being quoted: the pipeline depends on an interface it owns,
+and the vendor SDKs depend on fitting it. The abstraction also gives one
+obvious home for retries, timeouts, and error mapping, and later became the
+seam the whole middleware stack hangs off (#5a).
 
 **Status:** implemented, tested (`tests/test_provider_factory.py`,
 `test_fallback.py`).
@@ -291,7 +294,7 @@ network. Every test in the suite runs offline because of this.
 
 ---
 
-## Designed (rationale locked, wiring in progress)
+## The pipeline, the data and the product
 
 ### 7. In-process pipeline instead of a durable ARQ/Redis worker
 
@@ -311,6 +314,9 @@ an in-flight waiter on restart — is documented (ARCHITECTURE.md,
 deployment.md §0) rather than hidden. The upgrade path (move the waiter
 state to Redis) is [future enhancement](FUTURE_ENHANCEMENTS.md) #1.
 
+**Status:** implemented (`pipeline/events.py`, `pipeline/unreachable.py`),
+tested (`tests/test_router_cancel_delete.py`, `tests/test_fetcher.py`).
+
 ### 8. In-memory retrieval instead of pgvector
 
 **Choice:** chunk + embed + cosine-search in NumPy, scoped to one run.
@@ -323,6 +329,9 @@ hundred chunks is sub-millisecond and needs no extra infrastructure.
 Cross-run reuse and a persistent vector index are real optimizations —
 for a system with real traffic, which this scoping explicitly isn't.
 
+**Status:** implemented (`pipeline/retriever.py`), tested
+(`tests/test_retriever.py` — chunking, cosine ranking, ordering).
+
 ### 9. Per-source retrieval, not global
 
 **Choice:** retrieve top passages per (topic, source URL) separately;
@@ -334,6 +343,8 @@ schema constrains each claim's `source_url` to a labelled source.
 match for a topic about B, and the summarizer then mis-attributes the
 claim. Per-source retrieval makes cross-source attribution structurally
 impossible, not just discouraged.
+
+**Status:** implemented, tested (`tests/test_retriever_context.py`).
 
 ### 10. Cross-model judge against the original source
 
@@ -362,16 +373,22 @@ property that matters most) at zero added dependency, and because switching to
 a genuinely different family is a config change, not a rewrite.
 
 The abstraction is what keeps this a config decision rather than a permanent
-one — setting `OPENAI_API_KEY` + `OPENAI_BASE_URL` (Groq, OpenRouter,
-OpenAI) and a `JUDGE_MODEL` routes the judge to a genuinely different family
-with no code change. The seam survived the migration intact, which is the
-concrete payoff of #1.
+one. Because the judge is resolved by role, a second adapter for
+OpenAI-compatible endpoints (Groq, OpenRouter, OpenAI) is enough to move
+verification to another family: set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and a
+matching `JUDGE_MODEL` and `ProviderFactory.judge()` routes there, with no
+code change and no pipeline re-test. That adapter is in the codebase and
+covered by `tests/test_provider_factory.py`; the deployed app leaves it unset,
+and `/readyz` reports which path is live so the answer isn't a guess.
 
 Two limitations stated openly: the judge is itself an LLM, so it catches
 unsupported claims rather than guaranteeing correctness; and by default it
 shares a family with the summarizer. How well it actually performs is not
 left to assertion — it's measured (#16), and the same-family default is
 exactly the kind of change the eval exists to keep honest.
+
+**Status:** implemented (`pipeline/judge.py`), tested (`tests/test_judge.py`,
+`tests/test_evals.py`).
 
 ### 11. Source discovery: a deterministic service with a mandatory human gate
 
@@ -401,6 +418,9 @@ approval, which is a plain application step (candidates → DB → user decides
 applied deliberately. (A checkpointed agent version is noted as an
 alternative, not an improvement.)
 
+**Status:** implemented (`discovery/service.py`, `discovery/dedup.py`),
+tested (`tests/test_dedup.py`, `tests/test_router_discover.py`).
+
 ### 12. Blocked source → pause and let the user choose, not silent failure
 
 **Choice:** when a source can't yield usable content, pause the run and offer
@@ -425,6 +445,10 @@ invisible to the analysis stages.
 > clear choices; paste already covers the functional need. The backend upload
 > endpoint remains, and richer file upload is [`FUTURE_ENHANCEMENTS.md`](FUTURE_ENHANCEMENTS.md) #8.
 
+**Status:** implemented (`pipeline/fetcher.py`, `pipeline/unreachable.py`,
+`routers/sources.py`), tested (`tests/test_fetcher.py` — including the
+authwall classifier — and `tests/test_router_sources.py`).
+
 ### 13. Report derived from the `claims` table, no JSON blob
 
 **Choice:** assemble the report by querying normalized `claims` rows.
@@ -435,18 +459,27 @@ invisible to the analysis stages.
 process dies between them. One normalized source of truth removes the
 consistency split and makes change-detection a diff query.
 
-### 14. Clerk, Google OAuth only
+**Status:** implemented (`db/schema.sql`, `db/repository.py`), tested
+(`tests/test_changes.py`).
 
-**Choice:** Clerk for auth with Google as the sole sign-in method.
+### 14. Clerk auth: Google OAuth + passwordless email code
 
-**Rejected:** (a) email/password; (b) hand-rolled OAuth with authlib.
+**Choice:** Clerk for auth, with two sign-in methods — Google OAuth and a
+passwordless email one-time code. No password.
 
-**Why:** the target users all have Google accounts, so email/password
-would add rate-limiting, credential-stuffing defense, reset flows, and
-verification state for zero reach. Rolling OAuth by hand means owning
-PKCE, state, JWKS, and cookie security — each with a non-obvious failure
-mode. Clerk delegates all of it. Trade-off (excludes non-Google users) is
-acceptable for this audience and is a deliberate scoping call.
+**Rejected:** (a) email + **password**; (b) hand-rolled OAuth with authlib.
+
+**Why:** reviewers and users won't all have a Google account, so Google-only
+would lock them out — a passwordless email code lets anyone in with any
+address. Password auth was still rejected on purpose: storing a password brings
+reset flows, credential-stuffing defense, and breach liability, for no benefit
+over a one-time code that Clerk generates and verifies. Rolling OAuth by hand
+means owning PKCE, state, JWKS, and cookie security — each with a non-obvious
+failure mode; Clerk delegates all of it. The backend is indifferent to the
+method: it verifies the Clerk JWT and reads the user id either way.
+
+**Status:** implemented (`core/auth.py`, `frontend/src/middleware.ts`),
+tested (`tests/test_router_discover.py::test_discover_requires_auth_when_not_disabled`).
 
 ### 15. RLS as defense-in-depth; application layer as the operative control
 
@@ -461,6 +494,10 @@ protects the data" would be false here. The precise, honest statement —
 app-layer is operative, RLS is a latent second layer that activates if the
 frontend ever queries Supabase directly via a Clerk→Supabase JWT — is in
 the [`schema.sql`](backend/db/schema.sql) header.
+
+**Status:** implemented. Ownership filtering is exercised by the router tests
+(an unowned run is a 404, never a 403 that confirms it exists).
+
 ### 16. Evaluation harness for the guardrails
 
 **Choice:** a labelled dataset of fictional sources with planted defects
