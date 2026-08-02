@@ -11,8 +11,29 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import Settings, get_settings
 from app.core.preflight import check_serper
 from app.main import create_app
+
+
+def _client_with(**overrides: object) -> TestClient:
+    """A TestClient whose settings are injected, not inherited.
+
+    `_env_file=None` matters here. `/readyz` short-circuits the database check
+    when `DATABASE_URL` is unset, so with ambient settings this suite passes on
+    a developer machine (which has a repo-root .env) and 503s in CI (which
+    doesn't) — the test would be asserting on whose laptop it ran. Injecting
+    settings through the same DI seam the app uses in production is the fix.
+    """
+    app = create_app()
+    settings = Settings(
+        _env_file=None,
+        DATABASE_URL="postgresql://user:pw@localhost:5432/test",
+        SERPER_API_KEY="test-key",
+        **overrides,
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    return TestClient(app)
 
 
 @pytest.fixture
@@ -29,7 +50,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr("app.routers.health.run_preflight", ok_preflight)
     monkeypatch.setattr("app.routers.health.check_serper", ok_serper)
     monkeypatch.setattr("app.routers.health.check_database", ok_database)
-    return TestClient(create_app())
+    return _client_with()
 
 
 def test_readyz_all_ok_returns_200(client: TestClient) -> None:
@@ -58,7 +79,7 @@ def test_readyz_reports_503_and_names_the_failing_dependency(
     monkeypatch.setattr("app.routers.health.check_serper", bad_serper)
     monkeypatch.setattr("app.routers.health.check_database", ok_database)
 
-    resp = TestClient(create_app()).get("/readyz")
+    resp = _client_with().get("/readyz")
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "degraded"
